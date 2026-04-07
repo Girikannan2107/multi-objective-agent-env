@@ -39,6 +39,8 @@ class MyEnvironment(Environment):
         return SpaceObservation(
             done=False,
             reward=0.0,
+            power=self.env_data.get("power_available", 0),
+            system_status="active",
             metadata={"message": f"Mission difficulty set to {task_module.__name__.split('.')[-1]}", "state": self.env_data}
         )
 
@@ -83,6 +85,8 @@ class MyEnvironment(Environment):
         return SpaceObservation(
             done=done,
             reward=reward,
+            power=self.env_data.get("power_available", 0),
+            system_status="emergency" if self.env_data.get("emergency") else "active",
             metadata={
                 "step": self._state.step_count,
                 "action_taken": action.action,
