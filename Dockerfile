@@ -4,6 +4,8 @@ WORKDIR /app
 
 COPY . .
 
-RUN pip install --no-cache-dir openenv-core
+RUN pip install --no-cache-dir openenv-core openai uvicorn fastapi
 
-CMD ["python", "inference.py"]
+EXPOSE 8000
+
+CMD ["python", "-m", "server.app"]

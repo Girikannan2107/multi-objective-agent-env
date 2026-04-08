@@ -6,13 +6,10 @@ from openenv.core.env_server.types import State
 try:
     from models import SpaceAction, SpaceObservation
 except ImportError:
-    import sys
-    import os
-    sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
-    from models import SpaceAction, SpaceObservation
+    from ..models import SpaceAction, SpaceObservation
 
 import random
-from tasks import easy, medium, hard
+from .tasks import get_dynamic_task
 
 
 class MyEnvironment(Environment):
@@ -32,16 +29,15 @@ class MyEnvironment(Environment):
         self._state = State(episode_id=str(uuid4()), step_count=0)
         self._reset_count += 1
         
-        # Pick a random "real" task scenario
-        task_module = random.choice([easy, medium, hard])
-        self.env_data = task_module.get_task()
+        # Call the Dynamic Task Generator (No mocked data)
+        self.env_data = get_dynamic_task()
 
         return SpaceObservation(
             done=False,
             reward=0.0,
             power=self.env_data.get("power_available", 0),
             system_status="active",
-            metadata={"message": f"Mission difficulty set to {task_module.__name__.split('.')[-1]}", "state": self.env_data}
+            metadata={"message": f"Global reset #{self._reset_count} | Dynamic mission loaded", "state": self.env_data}
         )
 
     # ---------------------------

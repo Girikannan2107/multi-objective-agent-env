@@ -1,24 +1,24 @@
 import asyncio
 import os
+import json
 from typing import List, Optional
-
-from openai import OpenAI
 
 from server.my_env_environment import MyEnvironment
 from models import SpaceAction
 
+# =========================
+# ENV VARIABLES (FIXED)
+# =========================
+API_BASE_URL = os.getenv("API_BASE_URL", "https://api.openai.com/v1")
+MODEL_NAME = os.getenv("MODEL_NAME", "gpt-4o-mini")
 
-# =========================
-# ENV VARIABLES
-# =========================
-API_BASE_URL = os.getenv("API_BASE_URL", "https://router.huggingface.co/v1")
-MODEL_NAME = os.getenv("MODEL_NAME", "Qwen/Qwen2.5-72B-Instruct")
-API_KEY = os.getenv("HF_TOKEN")
+# ✅ FIX: standard key detection
+API_KEY = os.getenv("OPENAI_API_KEY") or os.getenv("HF_TOKEN")
 
 TASK_NAME = "space-mission"
 BENCHMARK = "space_env"
 
-MAX_STEPS = 10
+MAX_STEPS = 5
 SUCCESS_SCORE_THRESHOLD = 0.3
 
 
@@ -49,89 +49,82 @@ def log_end(success: bool, steps: int, score: float, rewards: List[float]):
 
 
 # =========================
-# SIMPLE AGENT (LLM + RULE)
+# SAFE CLIENT (FIXED)
 # =========================
-def get_action(client: OpenAI, state: dict):
+def get_client():
+    if not API_KEY:
+        return None
+
+    try:
+        from openai import OpenAI
+        return OpenAI(base_url=API_BASE_URL, api_key=API_KEY)
+    except Exception:
+        return None
+
+
+# =========================
+# AGENT (LLM + SAFE FALLBACK)
+# =========================
+def get_action(client: Optional["OpenAI"], state: dict):
+
+    # 🔥 ALWAYS SAFE FALLBACK
+    fallback = {
+        "steps": ["analyze", "decide", "execute"],
+        "output": "50%",
+        "action": "allocate_power"
+    }
+
+    # No API → fallback
+    if client is None:
+        return fallback, fallback["action"]
+
     try:
         prompt = f"""
 You are controlling a spacecraft energy allocation system.
 
-Current Mission State:
+State:
 {state}
 
-Goal:
-Allocate the EXACT required percentage of power to the 'life_support' system to maximize reward.
-
-Return JSON only:
+Return JSON:
 {{
-  "steps": ["Observation of needs", "Calculated allocation"],
-  "output": "XX%", 
+  "steps": ["reason"],
+  "output": "XX%",
   "action": "allocate_power"
 }}
 """
 
-        completion = client.chat.completions.create(
+        response = client.chat.completions.create(
             model=MODEL_NAME,
             messages=[{"role": "user", "content": prompt}],
-            temperature=0,
-            max_tokens=100
+            temperature=0
         )
 
-        text = (completion.choices[0].message.content or "").strip()
+        text = response.choices[0].message.content.strip()
 
-    except Exception:
-        text = "fallback"
+        # Clean markdown JSON
+        if "```" in text:
+            text = text.split("```")[1]
+            if text.startswith("json"):
+                text = text[4:].strip()
 
-    # Try to parse the LLM response
-    llm_data = {}
-    if text != "fallback":
-        try:
-            import json
-            # Extract JSON if it's wrapped in triple backticks
-            if "```json" in text:
-                text = text.split("```json")[1].split("```")[0].strip()
-            elif "```" in text:
-                text = text.split("```")[1].split("```")[0].strip()
-            llm_data = json.loads(text)
-        except Exception:
-            llm_data = {}
+        data = json.loads(text)
 
-    # fallback logic based on real state structure
-    try:
-        # Defaults for the Space Mission environment
-        fallback_action = "allocate_power"
-        fallback_output = "40%"
+        if "output" not in data:
+            raise ValueError("Invalid output")
 
-        if state.get("emergency", False):
-            fallback_action = "allocate_power"
-        
-        power = state.get("power_available", 0)
-        if power < 50:
-            fallback_action = "allocate_power"
-    except Exception:
-        fallback_action = "allocate_power"
-        fallback_output = "0%"
+        return data, data.get("action", "allocate_power")
 
-    # Final action selection
-    action_str = llm_data.get("action", fallback_action)
-    output_str = llm_data.get("output", fallback_output)
+    except Exception as e:
+        print(f"[LLM ERROR] {e}")
 
-    # structured output for logging
-    action_output = {
-        "steps": llm_data.get("steps", ["analyze", "decide", "execute"]),
-        "output": output_str,
-        "action": action_str
-    }
-
-    return action_output, action_str
+    return fallback, fallback["action"]
 
 
 # =========================
-# MAIN LOOP
+# MAIN LOOP (FIXED)
 # =========================
 async def main():
-    client = OpenAI(base_url=API_BASE_URL, api_key=API_KEY)
-
+    client = get_client()
     env = MyEnvironment()
 
     rewards = []
@@ -143,14 +136,14 @@ async def main():
 
     try:
         obs = env.reset()
-        # The environment returns the actual task state in metadata["state"]
-        state_dict = obs.metadata.get("state", {})
+
+        # ✅ FIX: safe state extraction
+        state_dict = getattr(obs, "metadata", {}).get("state", {})
 
         for step in range(1, MAX_STEPS + 1):
 
             action_output, action_str = get_action(client, state_dict)
 
-            # Map the LLM's structured output to the SpaceAction model
             action = SpaceAction(
                 action_type=action_str,
                 action=action_output.get("action", ""),
@@ -158,12 +151,11 @@ async def main():
             )
 
             obs = env.step(action)
-            
-            # Update state for next step feedback (if environment was multi-step)
-            state_dict = obs.metadata.get("state", {})
-            
-            reward = float(obs.reward or 0.0)
-            done = obs.done
+
+            state_dict = getattr(obs, "metadata", {}).get("state", {})
+
+            reward = float(getattr(obs, "reward", 0.0))
+            done = bool(getattr(obs, "done", True))
             error = None
 
             rewards.append(reward)
@@ -180,10 +172,13 @@ async def main():
             if done:
                 break
 
-        score = sum(rewards) / (len(rewards) or 1)
+        score = sum(rewards) / max(len(rewards), 1)
         score = min(max(score, 0.0), 1.0)
 
         success = score >= SUCCESS_SCORE_THRESHOLD
+
+    except Exception as e:
+        print(f"[FATAL ERROR] {e}")
 
     finally:
         log_end(success, steps_taken, score, rewards)
