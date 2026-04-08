@@ -232,8 +232,8 @@ orbital-resource-manager/
 ### Run Locally
 
 ```bash
-git clone https://github.com/your-username/orbital-resource-manager.git
-cd orbital-resource-manager
+git clone https://github.com/Girikannan2107/multi-objective-agent-env.git
+cd multi-objective-agent-env
 
 pip install -r requirements.txt
 uvicorn server.app:app --reload
@@ -263,13 +263,13 @@ docker run --rm -p 8000:8000 orbital-resource-manager:latest
 Deploy with a single command:
 
 ```bash
-openenv push --repo-id your-username/orbital-resource-manager
+openenv push --repo-id Girikannan/space-mission
 ```
 
 Your environment will be available at:
 
 ```
-https://huggingface.co/spaces/your-username/orbital-resource-manager
+https://huggingface.co/spaces/Girikannan10/space-mission
 ```
 
 ### Available Endpoints
