@@ -4,12 +4,8 @@ import re
 from openenv.core.env_server.interfaces import Environment
 from openenv.core.env_server.types import State
 
-try:
-    from models import SpaceAction, SpaceObservation
-except ImportError:
-    from ..models import SpaceAction, SpaceObservation
-
-from .tasks import get_dynamic_task
+from models import SpaceAction, SpaceObservation
+from server.tasks import get_dynamic_task
 
 
 class MyEnvironment(Environment):
