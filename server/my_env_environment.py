@@ -57,24 +57,28 @@ class MyEnvironment(Environment):
     # ---------------------------
     def compute_reward(self, action: SpaceAction) -> float:
         try:
-            # Extract percentage safely
-            match = re.search(r"\d+", action.output or "")
+            # Extract percentage safely using regex
+            match = re.search(r"(\d+)", str(action.output or ""))
             if not match:
                 return -1.0
 
-            allocated = int(match.group())
+            allocated = int(match.group(1))
 
-            correct = self.env_data.get("systems", {}).get("life_support", {}).get("required", 0)
+            # Get requirements from current task data
+            systems = self.env_data.get("systems", {})
+            life_support = systems.get("life_support", {})
+            correct = life_support.get("required", 0)
 
-            # ❌ Wrong action type
-            if action.action != "allocate_power":
+            # ❌ Wrong action type (be flexible with names)
+            act_name = (action.action or "").lower()
+            if "allocate" not in act_name:
                 return -1.0
 
             # ✅ Perfect match
             if allocated == correct:
                 return 1.0
 
-            # 🟡 Close range
+            # 🟡 Close range (within 10%)
             if abs(allocated - correct) <= 10:
                 return 0.5
 
