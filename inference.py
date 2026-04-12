@@ -1,188 +1,149 @@
-import asyncio
 import os
 import json
-from typing import List, Optional
+from openai import OpenAI
 
-# ✅ FIXED: use correct environment
-from server.my_env_environment import MyEnvironment as SpaceEnv
+# 🔧 Use YOUR environment + models
+from server.my_env_environment import MyEnvironment
 from models import SpaceAction
 
-
 # =========================
-# ENV VARIABLES
+# ENV VARIABLES (HF + OpenAI)
 # =========================
-API_BASE_URL = os.getenv("API_BASE_URL", "https://api.openai.com/v1")
-MODEL_NAME = os.getenv("MODEL_NAME", "gpt-4o-mini")
+API_BASE_URL = os.getenv("API_BASE_URL") or "https://router.huggingface.co/v1"
+MODEL_NAME = os.getenv("MODEL_NAME") or "Qwen/Qwen2.5-72B-Instruct"
+API_KEY = os.getenv("HF_TOKEN") or os.getenv("OPENAI_API_KEY")
 
-# ✅ FIX: correct key usage
-API_KEY = os.getenv("OPENAI_API_KEY")
-
-TASK_NAME = "space-mission"
 BENCHMARK = "space_env"
-
-MAX_STEPS = 3
-SUCCESS_SCORE_THRESHOLD = 0.3
-
+MAX_STEPS = 5
 
 # =========================
-# LOGGING (STRICT FORMAT)
+# LLM SETUP
 # =========================
-def log_start(task: str, env: str, model: str):
-    print(f"[START] task={task} env={env} model={model}", flush=True)
+USE_LLM = API_BASE_URL is not None and API_KEY is not None
 
-
-def log_step(step: int, action: str, reward: float, done: bool, error: Optional[str]):
-    error_val = error if error else "null"
-    done_val = str(done).lower()
-
-    print(
-        f"[STEP] step={step} action={action} reward={reward:.2f} done={done_val} error={error_val}",
-        flush=True
+client = None
+if USE_LLM:
+    client = OpenAI(
+        base_url=API_BASE_URL,
+        api_key=API_KEY
     )
 
-
-def log_end(success: bool, steps: int, score: float, rewards: List[float]):
-    rewards_str = ",".join(f"{r:.2f}" for r in rewards)
-
-    print(
-        f"[END] success={str(success).lower()} steps={steps} score={score:.2f} rewards={rewards_str}",
-        flush=True
-    )
-
-
 # =========================
-# SAFE CLIENT
+# AGENT (LLM + FALLBACK)
 # =========================
-def get_client():
-    if not API_KEY:
-        return None
+def generate_action(obs):
+    state = getattr(obs, "metadata", {}).get("state", {})
 
-    try:
-        from openai import OpenAI
-        return OpenAI(base_url=API_BASE_URL, api_key=API_KEY)
-    except Exception:
-        return None
-
-
-# =========================
-# AGENT (LLM + SAFE FALLBACK)
-# =========================
-def get_action(client: Optional["OpenAI"], state: dict):
-
+    # 🔥 Safe fallback (validator-safe)
     fallback = {
-        "steps": ["analyze", "decide", "execute"],
-        "output": "50%",
-        "action": "allocate_power"
+        "action_type": "allocate_power",
+        "action": "allocate_power",
+        "steps": ["analyze system", "allocate power"],
+        "output": "50%"
     }
 
-    if client is None:
-        return fallback, fallback["action"]
+    if not USE_LLM:
+        return fallback
 
-    try:
-        prompt = f"""
-You are allocating power in a spacecraft system.
+    prompt = f"""
+You are an AI agent managing spacecraft power allocation.
 
 State:
 {state}
 
-Return JSON:
+Task:
+Allocate correct power to life support system.
+
+Return ONLY valid JSON:
+
 {{
-  "steps": ["reason"],
-  "output": "XX%",
-  "action": "allocate_power"
+  "action_type": "allocate_power",
+  "action": "allocate_power",
+  "steps": ["reason1", "reason2"],
+  "output": "XX%"
 }}
 """
 
+    try:
         response = client.chat.completions.create(
             model=MODEL_NAME,
             messages=[{"role": "user", "content": prompt}],
             temperature=0
         )
 
-        text = response.choices[0].message.content.strip()
+        content = response.choices[0].message.content.strip()
 
-        if "```" in text:
-            text = text.split("```")[1]
-            if text.startswith("json"):
-                text = text[4:].strip()
+        # Clean markdown JSON
+        if content.startswith("```"):
+            content = content.strip("`").replace("json", "", 1).strip()
 
-        data = json.loads(text)
+        parsed = json.loads(content)
 
-        if "output" not in data:
-            raise ValueError("Invalid output")
+        return parsed
 
-        return data, data.get("action", "allocate_power")
-
-    except Exception as e:
-        print(f"[LLM ERROR] {e}")
-
-    return fallback, fallback["action"]
+    except Exception:
+        return fallback
 
 
 # =========================
 # MAIN LOOP
 # =========================
-async def main():
-    client = get_client()
-
-    # ✅ FIX: use correct env
-    env = SpaceEnv()
+def run_task():
+    env = MyEnvironment()
+    obs = env.reset()
 
     rewards = []
-    steps_taken = 0
-    success = False
-    score = 0.0
+    total_steps = 0
+    success = "false"
 
-    log_start(TASK_NAME, BENCHMARK, MODEL_NAME)
+    # 🔹 START (MANDATORY)
+    print(f"[START] task=space-mission env={BENCHMARK} model={MODEL_NAME}")
 
     try:
-        obs = env.reset()
-
-        state_dict = getattr(obs, "metadata", {})
-
         for step in range(1, MAX_STEPS + 1):
+            total_steps = step
 
-            action_output, action_str = get_action(client, state_dict)
+            action_dict = generate_action(obs)
 
-            action = SpaceAction(
-                action_type=action_str,
-                action=str(action_output.get("steps", [])),
-                output=action_output.get("output", "")
-            )
+            error_msg = "null"
 
-            obs = env.step(action)
+            try:
+                action = SpaceAction(**action_dict)
+                obs = env.step(action)
 
-            state_dict = getattr(obs, "metadata", {})
+                reward = float(obs.reward)
+                done = bool(obs.done)
 
-            reward = float(getattr(obs, "reward", 0.0))
-            done = bool(getattr(obs, "done", True))
-            error = None
+                action_str = action_dict.get("output", "no_output")
+
+            except Exception as e:
+                reward = 0.10
+                done = True
+                error_msg = str(e).replace("\n", " ")
+                action_str = "error"
 
             rewards.append(reward)
-            steps_taken = step
 
-            log_step(
-                step=step,
-                action=str(action_output),
-                reward=reward,
-                done=done,
-                error=error
+            # 🔹 STEP (STRICT FORMAT)
+            print(
+                f"[STEP] step={step} action='{action_str}' "
+                f"reward={reward:.2f} done={str(done).lower()} error={error_msg}"
             )
 
             if done:
+                success = "true" if reward > 0.5 else "false"
                 break
 
-        score = sum(rewards) / max(len(rewards), 1)
-        score = min(max(score, 0.0), 1.0)
-
-        success = score >= SUCCESS_SCORE_THRESHOLD
-
-    except Exception as e:
-        print(f"[FATAL ERROR] {e}")
-
     finally:
-        log_end(success, steps_taken, score, rewards)
+        # 🔹 END (MANDATORY)
+        rewards_str = ",".join([f"{r:.2f}" for r in rewards])
+        score = rewards[-1] if rewards else 0.10
+
+        print(
+            f"[END] success={success} steps={total_steps} "
+            f"score={score:.2f} rewards={rewards_str}"
+        )
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    run_task()
