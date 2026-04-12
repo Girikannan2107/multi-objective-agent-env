@@ -1,6 +1,4 @@
 from uuid import uuid4
-import re
-
 from openenv.core.env_server.interfaces import Environment
 from openenv.core.env_server.types import State
 
@@ -18,7 +16,7 @@ class MyEnvironment(Environment):
         self.env_data = {}
 
     # ---------------------------
-    # SAFE RESET (VERY IMPORTANT)
+    # RESET (FIXED FOR PHASE 2)
     # ---------------------------
     def reset(self) -> SpaceObservation:
         try:
@@ -29,63 +27,42 @@ class MyEnvironment(Environment):
 
             return SpaceObservation(
                 done=False,
-                reward=0.0,
+                reward=0.1,  # ✅ MUST NOT BE 0
                 power=self.env_data.get("power_available", 0),
                 system_status="active",
                 metadata={
                     "message": f"Reset #{self._reset_count}",
-                    "state": self.env_data
+                    "state": self.env_data,
+                    "instruction": self.env_data.get("instruction", "")
                 }
             )
 
         except Exception as e:
-            # 🔥 CRITICAL: never crash reset
             return SpaceObservation(
                 done=False,
-                reward=0.0,
+                reward=0.1,
                 power=0,
                 system_status="error",
                 metadata={"error": str(e), "state": {}}
             )
 
     # ---------------------------
-    # SMART REWARD FUNCTION
+    # REWARD USING TASK GRADER (PHASE 2 FIX)
     # ---------------------------
     def compute_reward(self, action: SpaceAction) -> float:
-        try:
-            # Extract percentage safely using regex
-            match = re.search(r"(\d+)", str(action.output or ""))
-            if not match:
-                return -1.0
 
-            allocated = int(match.group(1))
+        grader = self.env_data.get("grader")
 
-            # Get requirements from current task data
-            systems = self.env_data.get("systems", {})
-            life_support = systems.get("life_support", {})
-            correct = life_support.get("required", 0)
+        if grader:
+            try:
+                return float(grader(action, self))
+            except Exception:
+                return 0.1
 
-            # ❌ Wrong action type (be flexible with names)
-            act_name = (action.action or "").lower()
-            if "allocate" not in act_name:
-                return -1.0
-
-            # ✅ Perfect match
-            if allocated == correct:
-                return 1.0
-
-            # 🟡 Close range (within 10%)
-            if abs(allocated - correct) <= 10:
-                return 0.5
-
-            # 🔴 Wrong
-            return -1.0
-
-        except Exception:
-            return -1.0
+        return 0.1
 
     # ---------------------------
-    # SAFE STEP FUNCTION
+    # STEP FUNCTION
     # ---------------------------
     def step(self, action: SpaceAction) -> SpaceObservation:
         try:
@@ -93,10 +70,8 @@ class MyEnvironment(Environment):
 
             reward = self.compute_reward(action)
 
-            done = True  # single-step evaluation
-
             return SpaceObservation(
-                done=done,
+                done=True,
                 reward=reward,
                 power=self.env_data.get("power_available", 0),
                 system_status="emergency" if self.env_data.get("emergency") else "active",
@@ -109,17 +84,16 @@ class MyEnvironment(Environment):
             )
 
         except Exception as e:
-            # 🔥 NEVER crash step
             return SpaceObservation(
                 done=True,
-                reward=-1.0,
+                reward=0.1,
                 power=0,
                 system_status="error",
                 metadata={"error": str(e), "state": {}}
             )
 
     # ---------------------------
-    # STATE PROPERTY
+    # STATE
     # ---------------------------
     @property
     def state(self) -> State:

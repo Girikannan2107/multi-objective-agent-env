@@ -3,22 +3,24 @@ import os
 import json
 from typing import List, Optional
 
-from server.my_env_environment import MyEnvironment
+# ✅ FIXED: use correct environment
+from server.my_env_environment import MyEnvironment as SpaceEnv
 from models import SpaceAction
 
+
 # =========================
-# ENV VARIABLES (FIXED)
+# ENV VARIABLES
 # =========================
 API_BASE_URL = os.getenv("API_BASE_URL", "https://api.openai.com/v1")
 MODEL_NAME = os.getenv("MODEL_NAME", "gpt-4o-mini")
 
-# ✅ FIX: standard key detection
-API_KEY = os.getenv("OPENAI_API_KEY") or os.getenv("HF_TOKEN")
+# ✅ FIX: correct key usage
+API_KEY = os.getenv("OPENAI_API_KEY")
 
 TASK_NAME = "space-mission"
 BENCHMARK = "space_env"
 
-MAX_STEPS = 5
+MAX_STEPS = 3
 SUCCESS_SCORE_THRESHOLD = 0.3
 
 
@@ -49,7 +51,7 @@ def log_end(success: bool, steps: int, score: float, rewards: List[float]):
 
 
 # =========================
-# SAFE CLIENT (FIXED)
+# SAFE CLIENT
 # =========================
 def get_client():
     if not API_KEY:
@@ -67,20 +69,18 @@ def get_client():
 # =========================
 def get_action(client: Optional["OpenAI"], state: dict):
 
-    # 🔥 ALWAYS SAFE FALLBACK
     fallback = {
         "steps": ["analyze", "decide", "execute"],
         "output": "50%",
         "action": "allocate_power"
     }
 
-    # No API → fallback
     if client is None:
         return fallback, fallback["action"]
 
     try:
         prompt = f"""
-You are controlling a spacecraft energy allocation system.
+You are allocating power in a spacecraft system.
 
 State:
 {state}
@@ -101,7 +101,6 @@ Return JSON:
 
         text = response.choices[0].message.content.strip()
 
-        # Clean markdown JSON
         if "```" in text:
             text = text.split("```")[1]
             if text.startswith("json"):
@@ -121,11 +120,13 @@ Return JSON:
 
 
 # =========================
-# MAIN LOOP (FIXED)
+# MAIN LOOP
 # =========================
 async def main():
     client = get_client()
-    env = MyEnvironment()
+
+    # ✅ FIX: use correct env
+    env = SpaceEnv()
 
     rewards = []
     steps_taken = 0
@@ -137,8 +138,7 @@ async def main():
     try:
         obs = env.reset()
 
-        # ✅ FIX: safe state extraction
-        state_dict = getattr(obs, "metadata", {}).get("state", {})
+        state_dict = getattr(obs, "metadata", {})
 
         for step in range(1, MAX_STEPS + 1):
 
@@ -146,13 +146,13 @@ async def main():
 
             action = SpaceAction(
                 action_type=action_str,
-                action=action_output.get("action", ""),
+                action=str(action_output.get("steps", [])),
                 output=action_output.get("output", "")
             )
 
             obs = env.step(action)
 
-            state_dict = getattr(obs, "metadata", {}).get("state", {})
+            state_dict = getattr(obs, "metadata", {})
 
             reward = float(getattr(obs, "reward", 0.0))
             done = bool(getattr(obs, "done", True))
